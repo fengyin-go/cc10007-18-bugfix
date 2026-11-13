@@ -34,5 +34,12 @@ export type ActionResult = {
 
 export type OverviewResult = {
   cards: { label: string; value: number }[]
-  modules: { name: string; created: number; pending: number; abnormal: number }[]
+  modules: {
+    name: string
+    created: number
+    pending: number
+    abnormal: number
+    /** 已启用规则正在重判：旧结论仍有效，不计「待处理」。 */
+    rejudging: number
+  }[]
 }

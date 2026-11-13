@@ -22,6 +22,11 @@
       <span v-for="item in statusSummary" :key="item.status" class="legend-item">
         {{ item.status }}：{{ item.count }}
       </span>
+      <span class="legend-item">质量资格：{{ gateSummary }}</span>
+    </p>
+
+    <p class="notice" :class="messageOk ? 'notice-ok' : 'notice-error'">
+      {{ message || '启用规则前读取质量截面：只认已启用质量规则的当前结论，历史版本不作为放行证明。' }}
     </p>
 
     <form class="filter-bar" @submit.prevent="reload">
@@ -37,6 +42,7 @@
       <thead>
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th>质量资格</th>
           <th>当前状态</th>
           <th>可执行动作</th>
         </tr>
@@ -44,6 +50,12 @@
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td>
+            <span v-if="gateOf(row)" class="tag" :class="gateTag(gateOf(row)!.eligibility)">
+              {{ gateOf(row)!.eligibility }}
+            </span>
+            <span v-else>—</span>
+          </td>
           <td>{{ row.status }}</td>
           <td class="row-actions">
             <button
@@ -58,14 +70,14 @@
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 2" class="empty-state">暂无清洗加工数据，可先登记清洗规则</td>
+          <td :colspan="columns.length + 3" class="empty-state">暂无清洗加工数据，可先登记清洗规则</td>
         </tr>
       </tbody>
     </table>
 
     <footer class="page-foot">
       <span>共 {{ total }} 条清洗加工记录</span>
-      <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
+      <span v-if="message" :class="messageOk ? 'text-muted' : 'error-text'">{{ message }}</span>
     </footer>
   </section>
 </template>
@@ -75,21 +87,23 @@ import { computed, onMounted, ref } from 'vue'
 
 import {
   downloadEntries,
+  evaluateQualityGate,
   listEntries,
   moduleMeta,
   runAction as applyAction,
+  type QualityGate,
 } from '@/api/local-service'
 import type { EntryRow } from '@/data/types'
 
 const meta = moduleMeta('cleanse')
-const columns = ["规则编号", "输入表名", "目标表名", "空值处理", "格式校验", "异常阈值", "规则版本", "生效日期"]
+const columns = ["规则编号", "输入表名", "目标表名", "空值处理", "格式校验", "异常阈值", "规则版本", "生效日期", "质量校验表"]
 const actions = ["提交校验", "启用规则", "停用规则"]
 const statuses = ["草稿", "待校验", "已启用", "已停用"]
-const stats = [{"label": "清洗规则总数", "value": 0}, {"label": "已启用规则", "value": 0}, {"label": "待校验规则", "value": 0}]
 
 const rows = ref<EntryRow[]>([])
 const total = ref(0)
-const errorMessage = ref('')
+const message = ref('')
+const messageOk = ref(true)
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
 const statusSummary = computed(() =>
@@ -98,6 +112,32 @@ const statusSummary = computed(() =>
     count: rows.value.filter((row) => String(row.status) === status).length,
   })),
 )
+const gateSummary = computed(() => {
+  const gates = rows.value.map((row) => gateOf(row)).filter((gate): gate is QualityGate => Boolean(gate))
+  const count = (value: string) => gates.filter((gate) => gate.eligibility === value).length
+  return `放行 ${count('放行')} / 阻断 ${count('阻断')} / 待定 ${count('待定')}`
+})
+const stats = computed(() => [
+  { label: '清洗规则总数', value: total.value },
+  { label: '已启用规则', value: rows.value.filter((row) => String(row.status) === '已启用').length },
+  { label: '待校验规则', value: rows.value.filter((row) => String(row.status) === '待校验').length },
+])
+
+function gateOf(row: EntryRow): QualityGate | null {
+  const table = String(row['质量校验表'] ?? '')
+  return table ? evaluateQualityGate(table) : null
+}
+
+function gateTag(eligibility: string) {
+  if (eligibility === '放行') return 'tag-ok'
+  if (eligibility === '阻断') return 'tag-error'
+  return 'tag-warn'
+}
+
+function setMessage(text: string, ok: boolean) {
+  message.value = text
+  messageOk.value = ok
+}
 
 function resetFilters() {
   filters.value = {}
@@ -109,27 +149,23 @@ function exportRows() {
 }
 
 function openCreate() {
-  errorMessage.value = '清洗规则登记入口尚未接入审批流'
+  setMessage('清洗规则登记入口尚未接入审批流', false)
 }
 
 function runAction(action: string, row: EntryRow) {
-  errorMessage.value = ''
   const result = applyAction(meta.key, Number(row.id), action)
-  if (!result.ok) {
-    errorMessage.value = result.message
-    return
-  }
+  setMessage(result.message, result.ok)
+  if (!result.ok) return
   reload()
 }
 
 function reload() {
-  errorMessage.value = ''
   try {
     const payload = listEntries(meta.key, filters.value)
     rows.value = payload.items
     total.value = payload.total
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '清洗加工列表读取失败'
+    setMessage(error instanceof Error ? error.message : '清洗加工列表读取失败', false)
   }
 }
 
